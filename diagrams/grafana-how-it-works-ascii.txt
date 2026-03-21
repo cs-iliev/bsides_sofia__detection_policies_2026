@@ -1,0 +1,180 @@
+
+  Grafana — How It Works in This Workshop
+  ========================================
+
+
+  1. WHAT GRAFANA IS
+  ===================
+
+  Grafana is a visualisation layer. It does not store data.
+  It queries data sources and renders them as panels in a dashboard.
+
+  +-------------------------------+
+  |  Grafana                      |
+  |                               |
+  |  reads from --> Prometheus    |
+  |  renders  --> Dashboard       |
+  |  alerts via -> Alertmanager   |
+  |               (configured     |
+  |                separately)    |
+  +-------------------------------+
+
+  Grafana does not evaluate alert rules in this setup.
+  Prometheus evaluates the rules and sends to Alertmanager.
+  Grafana only shows what Prometheus has already collected.
+
+
+  2. HOW GRAFANA CONNECTS TO PROMETHEUS
+  ======================================
+
+  Grafana has a data source configured that points to Prometheus.
+  In this workshop it is set up automatically via the Helm values:
+
+  File: deploy/helm-values/kube-prometheus-stack-values.yaml
+
+  At startup, Grafana loads the data source:
+
+  Grafana (http://localhost:3000)
+         |
+         | HTTP query (PromQL)
+         v
+  Prometheus (http://monitoring-prometheus:9090)
+         |
+         | returns time series
+         v
+  Grafana renders the panel
+
+
+  3. THE WORKSHOP DASHBOARD
+  ==========================
+
+  File: observability/grafana/dashboard.json
+
+  The dashboard has two panels:
+
+  Panel 1 — Active violations by policy
+  ----------------------------------------
+  PromQL:
+    sum by (policy) (kyverno_policy_results_total{result="fail"})
+
+  What it shows:
+    One bar per policy.
+    Height = number of active failing evaluations.
+    If a policy has no failures, its bar is 0 or absent.
+
+  +--------------------------------------------+
+  |  Active violations by policy               |
+  |                                            |
+  |  3 |    ##                                  |
+  |  2 |    ##                                  |
+  |  1 |    ##    ##                            |
+  |  0 +----+-----+------> policy              |
+  |       disallow  require                     |
+  |       -latest   -requests                   |
+  +--------------------------------------------+
+
+
+  Panel 2 — Violations by namespace
+  ------------------------------------
+  PromQL:
+    sum by (namespace) (kyverno_policy_results_total{result="fail"})
+
+  What it shows:
+    One bar per namespace.
+    Tells you which team has the most configuration debt.
+
+  +--------------------------------------------+
+  |  Violations by namespace                   |
+  |                                            |
+  |  3 |    ##                                  |
+  |  1 |    ##    ##                            |
+  |  0 +----+-----+------> namespace           |
+  |         demo   staging                      |
+  +--------------------------------------------+
+
+
+  4. HOW A NEW PANEL GETS INTO GRAFANA
+  ======================================
+
+  There are two ways to add panels in this setup:
+
+
+  Way 1 — Via the JSON file in Git (recommended)
+  ------------------------------------------------
+
+  observability/grafana/dashboard.json
+         |
+         | Argo CD syncs to cluster
+         v
+  Grafana ConfigMap (grafana-dashboard-workshop)
+         |
+         | Grafana sidecar detects the ConfigMap
+         v
+  Grafana loads the dashboard automatically
+
+
+  Way 2 — Via the Grafana UI (not recommended)
+  -----------------------------------------------
+
+  Edit dashboard in browser -> Save
+         |
+         | stored only in Grafana's internal database
+         | NOT in Git
+         v
+  Cluster restart -> change is LOST
+
+  Rule: if it is not in Git, it does not exist.
+
+
+  5. REFRESH AND SCRAPE TIMING
+  ==============================
+
+  Event                          Approximate delay
+  ----------------------------   -----------------
+  Kyverno records violation      ~0s (immediate)
+  Prometheus scrapes metric      ~15s (scrape interval)
+  Grafana refreshes panel        ~30s (dashboard refresh)
+
+  If you apply a bad config and the panel does not move immediately:
+  wait 30 seconds, then refresh. The data will be there.
+
+
+  6. WHAT TO SHOW IN THE DEMO
+  =============================
+
+  Before introducing the violation:
+
+    Open Grafana at http://localhost:3000
+    Navigate to the workshop dashboard.
+    Both panels should show 0.
+    Say: "This is the baseline. Clean state."
+
+  After applying the bad-image-patch:
+
+    Wait ~30 seconds.
+    Panel 1 (by policy) should show 1 for disallow-latest.
+    Panel 2 (by namespace) should show 1 for demo.
+    Say: "The violation is now visible. Without us doing anything manually.
+          The pipeline brought it here automatically."
+
+  After reverting the fix:
+
+    Wait ~30 seconds.
+    Both panels should return to 0.
+    Say: "The signal resolved itself. The alert would have closed automatically.
+          The fix arrived via Git. Argo CD reconciled. The metric dropped."
+
+
+  7. PANEL VS ALERT — THE DIFFERENCE
+  =====================================
+
+  Dashboard panel                 Alert rule
+  --------------------------------  -----------------------------------
+  Always visible                    Only fires when condition is met
+  Useful for ongoing monitoring     Useful for interrupting someone
+  You have to look at it            It comes to you
+  No noise if you do not open it    Can become noise if misconfigured
+
+  Use panels for operational awareness.
+  Use alerts for things that need immediate action.
+
