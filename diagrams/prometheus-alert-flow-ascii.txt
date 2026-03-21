@@ -1,0 +1,179 @@
+
+  Prometheus Alert Rule — How It Works
+  =====================================
+
+
+  1. THE RULE ANATOMY
+  ====================
+
+  File: observability/prometheus/rules.yaml
+
+  +----------------------------------------------------------+
+  |  PrometheusRule                                          |
+  |                                                          |
+  |  alert:  KyvernoPolicyViolationDetected                  |
+  |                           |                              |
+  |                    name shown in                         |
+  |                    Alertmanager and tickets              |
+  |                                                          |
+  |  expr:   sum by (policy, namespace)                      |
+  |            (kyverno_policy_results_total{result="fail"}) |
+  |            > 0                                           |
+  |            |         |                      |      |     |
+  |            |    group by these          filter   threshold|
+  |            |    label dimensions                          |
+  |            |                                              |
+  |       aggregate across                                    |
+  |       all time series                                     |
+  |                                                          |
+  |  for:    2m           <-- wait before firing             |
+  |                                                          |
+  |  labels:                                                 |
+  |    severity: warning  <-- used by Alertmanager routing   |
+  |    team: platform     <-- used by Alertmanager routing   |
+  |                                                          |
+  |  annotations:                                            |
+  |    summary: "Kyverno policy violation detected"          |
+  |    description: "Policy {{ $labels.policy }} has        |
+  |      active failures in namespace {{ $labels.namespace}}"|
+  |                          |                    |          |
+  |                   substituted at         substituted at  |
+  |                   alert time             alert time      |
+  +----------------------------------------------------------+
+
+
+  2. THE METRIC KYVERNO EXPOSES
+  ==============================
+
+  Kyverno exports a counter metric for every policy evaluation:
+
+  kyverno_policy_results_total
+
+  With these labels:
+    policy      = name of the ClusterPolicy
+    namespace   = namespace of the evaluated resource
+    result      = "pass" or "fail"
+    resource    = kind of the resource (Deployment, Pod...)
+
+  Examples:
+
+  kyverno_policy_results_total{policy="disallow-latest",  namespace="demo", result="pass"} 12
+  kyverno_policy_results_total{policy="disallow-latest",  namespace="demo", result="fail"} 1
+  kyverno_policy_results_total{policy="require-requests", namespace="demo", result="pass"} 12
+  kyverno_policy_results_total{policy="require-requests", namespace="demo", result="fail"} 0
+
+
+  3. THE PROMQL EXPRESSION STEP BY STEP
+  =======================================
+
+  expr: sum by (policy, namespace) (kyverno_policy_results_total{result="fail"}) > 0
+
+  Step 1 — filter
+    kyverno_policy_results_total{result="fail"}
+    Keep only the time series where result label equals "fail"
+    Drops all the "pass" results
+
+  Step 2 — aggregate
+    sum by (policy, namespace) (...)
+    Add up the values grouped by policy name and namespace
+    Result: one number per (policy, namespace) pair
+
+  Step 3 — threshold
+    > 0
+    If the sum is greater than zero, the condition is TRUE
+    If zero (no failures), the condition is FALSE
+
+  Example output after step 2:
+
+    {policy="disallow-latest",  namespace="demo"}  = 1   --> TRUE  (fires)
+    {policy="require-requests", namespace="demo"}  = 0   --> FALSE (silent)
+
+
+  4. THE for: 2m — WHY IT EXISTS
+  ================================
+
+  Without for:                      With for: 2m
+  -------------                     ------------
+
+  t=0   violation appears           t=0   violation appears
+  t=0   alert FIRES immediately     t=0   state: PENDING
+  t=30s pod restarts, fixed         t=30s pod restarts, fixed
+  t=30s alert RESOLVES              t=30s state: back to inactive
+                                          alert never fired
+  Result: noisy alert for a
+  30-second transient event         Result: no alert for transient events
+
+  The for: 2m means:
+  - Expression must be TRUE for 2 continuous minutes
+  - If it becomes FALSE before 2 minutes, the timer resets
+  - Only after 2 uninterrupted minutes does the alert reach FIRING state
+
+
+  5. ALERT STATES
+  ================
+
+  Expression FALSE
+       |
+       | expression becomes TRUE
+       v
+  PENDING ---------> 2 minutes pass ---------> FIRING
+       |                                           |
+       | expression becomes FALSE                  | expression becomes FALSE
+       | (before 2m timer completes)               |
+       v                                           v
+  (inactive, no alert sent)                   RESOLVED
+                                              (Alertmanager notified)
+
+
+  6. FULL PIPELINE — from violation to notification
+  ==================================================
+
+  Kyverno background scan
+          |
+          | violation found in Deployment/demo-app
+          v
+  PolicyReport updated (immediate)
+  kyverno_policy_results_total{result="fail"} incremented (immediate)
+          |
+          | Prometheus scrapes Kyverno metrics endpoint
+          | interval: every 15-30 seconds
+          v
+  Prometheus evaluates alert rule expression
+  result: sum(fail) > 0 --> TRUE
+  alert state: PENDING
+          |
+          | expression stays TRUE for 2 minutes
+          v
+  alert state: FIRING
+  Prometheus notifies Alertmanager
+          |
+          | Alertmanager applies routing rules
+          | matches: severity=warning, team=platform
+          v
+  +---------------------------+
+  | Alertmanager sends to:    |
+  |                           |
+  |  webhook (ticket system)  |
+  |  Slack channel            |
+  |  email                    |
+  |  PagerDuty                |
+  +---------------------------+
+          |
+          | fix applied via Git, Argo CD reconciles
+          | kyverno_policy_results_total{result="fail"} drops to 0
+          v
+  alert state: RESOLVED
+  Alertmanager sends RESOLVED notification (send_resolved: true)
+
+
+  7. TIMING SUMMARY
+  ==================
+
+  Event                                Delay from violation
+  -----------------------------------  --------------------
+  PolicyReport updated                 ~0s  (immediate)
+  Metric visible in Prometheus         ~15s (scrape interval)
+  Alert enters PENDING state           ~15s
+  Alert enters FIRING state            ~2m 15s
+  Alertmanager sends notification      ~2m 20s
+  Alert resolves after fix             ~2m 15s after fix applied

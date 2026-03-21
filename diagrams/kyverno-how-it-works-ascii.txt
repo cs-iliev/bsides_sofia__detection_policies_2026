@@ -1,0 +1,148 @@
+
+  Kyverno — How It Works
+  =======================
+
+
+  1. ADMISSION FLOW (new resources)
+  ==================================
+
+  Developer / CI                API Server              Kyverno Webhook
+       |                            |                          |
+       |--- kubectl apply --------->|                          |
+       |                            |                          |
+       |                            |--- AdmissionReview ----->|
+       |                            |    (the resource YAML)   |
+       |                            |                          |
+       |                            |         validationFailureAction?
+       |                            |                          |
+       |                            |              +--------+--+---------+
+       |                            |              |                     |
+       |                            |           Enforce               Audit
+       |                            |              |                     |
+       |                            |        PASS? |             PASS?   |
+       |                            |         /   \              /   \   |
+       |                            |       YES    NO          YES    NO |
+       |                            |        |      |           |      | |
+       |                            |     Allow  Reject      Allow  Allow|
+       |                            |                                  | |
+       |                            |                          record violation
+       |                            |                          in PolicyReport
+       |<-- resource accepted <-----|                                    |
+
+
+  2. BACKGROUND SCAN (existing resources)
+  ========================================
+
+  Kyverno runs a background scan loop every few minutes.
+  It re-evaluates ALL existing resources against ALL active policies.
+  This catches violations on resources that were deployed BEFORE the policy existed.
+
+  +-------------------------+
+  |  ClusterPolicy created  |
+  |  (or updated)           |
+  +-------------------------+
+            |
+            | background: true
+            v
+  +--------------------------------------------+
+  |  Background controller                      |
+  |                                             |
+  |  for each namespace:                        |
+  |    for each resource (Pod, Deployment...):  |
+  |      evaluate against all active policies   |
+  |      write result to PolicyReport           |
+  +--------------------------------------------+
+            |
+            v
+  +--------------------------------------------+
+  |  PolicyReport (one per namespace)           |
+  |                                             |
+  |  results:                                   |
+  |    - policy: disallow-latest                |
+  |      result: fail   <-- violation found     |
+  |      resource: Deployment/demo-app          |
+  |      message: Images must not use :latest   |
+  |                                             |
+  |    - policy: require-requests               |
+  |      result: pass   <-- compliant           |
+  |      resource: Deployment/demo-app          |
+  +--------------------------------------------+
+
+
+  3. validationFailureAction — AUDIT vs ENFORCE
+  ==============================================
+
+  AUDIT                              ENFORCE
+  ------                             -------
+  Resource arrives at API server     Resource arrives at API server
+          |                                  |
+          v                                  v
+  Kyverno evaluates                  Kyverno evaluates
+          |                                  |
+     VIOLATION?                         VIOLATION?
+      /       \                          /       \
+    YES        NO                      YES        NO
+     |          |                       |          |
+  resource   resource                REJECT     resource
+  ALLOWED    ALLOWED                 (403)      ALLOWED
+     |
+  PolicyReport
+  result: fail
+  metric incremented
+
+  In the workshop: both policies use Audit.
+  The deploy always goes through. The violation is always recorded.
+
+
+  4. THE CONDITION — how each policy detects a violation
+  =======================================================
+
+  disallow-latest
+  ---------------
+
+  Input:  container image field from the resource
+  Logic:  does the image name contain the string ":latest"?
+
+    image: nginxinc/nginx-unprivileged:1.29.1   --> contains(":latest") = false --> PASS
+    image: nginxinc/nginx-unprivileged:latest   --> contains(":latest") = true  --> FAIL
+    image: nginx:latest                          --> contains(":latest") = true  --> FAIL
+    image: myapp                                 --> contains(":latest") = false --> PASS
+                                                     (no tag = implicit latest,
+                                                      this policy does NOT catch it)
+
+
+  require-requests
+  ----------------
+
+  Input:  resources block of each container
+  Logic:  do resources.requests.cpu AND resources.requests.memory exist and are non-empty?
+
+    resources:                      resources:          resources: {}
+      requests:                       requests:
+        cpu: 100m    --> PASS           cpu: 100m  --> FAIL (memory missing)
+        memory: 128Mi
+                                    resources:          (field absent) --> FAIL
+                                      requests:
+                                        memory: 128Mi --> FAIL (cpu missing)
+
+
+  5. WHERE THE VIOLATION GOES
+  ============================
+
+                    Kyverno detects violation
+                             |
+               +-------------+-------------+
+               |                           |
+               v                           v
+        PolicyReport                 Prometheus metric
+        (Kubernetes object)          kyverno_policy_results_total
+                                     {
+        kubectl get policyreport        policy="disallow-latest",
+        -n demo -o yaml                 namespace="demo",
+                                        result="fail"
+        results:                     } = 1
+          - policy: disallow-latest
+            result: fail
+            resource: demo-app
+            message: "Images must
+             not use the latest tag"
