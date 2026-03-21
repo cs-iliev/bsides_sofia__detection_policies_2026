@@ -1,0 +1,223 @@
+
+  Helm y Kustomize — Como se usan en este workshop
+  ==================================================
+
+  Son dos herramientas distintas que hacen cosas distintas.
+  En este workshop se usan juntas pero en capas diferentes.
+
+
+  RESUMEN EN UNA LINEA
+  =====================
+
+  Helm      -->  instala herramientas de terceros (ArgoCD, Kyverno, Prometheus)
+  Kustomize -->  gestiona los manifiestos de tu propia app
+
+
+  =====================================================================
+
+  HELM
+  =====
+
+  Helm es un gestor de paquetes para Kubernetes.
+  Un "chart" de Helm es un paquete con todos los manifiestos de una aplicacion,
+  parametrizables mediante un fichero de values.
+
+  SIN HELM                          CON HELM
+  ---------                         --------
+  Descargas 40 YAMLs de ArgoCD      helm install argocd argo/argo-cd \
+  Los aplicas en orden                 --values deploy/helm-values/argocd-values.yaml
+  Si algo falla, no sabes donde
+  Actualizar es un proceso manual    helm upgrade argocd argo/argo-cd --reuse-values
+
+
+  COMO SE USA EN ESTE WORKSHOP
+  =============================
+
+  File: scripts/install-workshop-stack.sh
+
+  helm upgrade --install argocd argo/argo-cd \
+    --kube-context k3d-workshop \
+    --namespace argocd \
+    --values deploy/helm-values/argocd-values.yaml \   <-- tus personalizaciones
+    --wait \
+    --timeout 10m
+
+  Lo mismo para kyverno y kube-prometheus-stack.
+
+  Los tres charts que instala el workshop:
+
+  +---------------------------+------------------------------+------------------+
+  |  Chart                    |  Que instala                 |  Namespace       |
+  +---------------------------+------------------------------+------------------+
+  |  argo/argo-cd             |  ArgoCD server, repo server, |  argocd          |
+  |                           |  application controller      |                  |
+  +---------------------------+------------------------------+------------------+
+  |  kyverno/kyverno          |  Kyverno admission webhook,  |  kyverno         |
+  |                           |  background controller       |                  |
+  +---------------------------+------------------------------+------------------+
+  |  prometheus-community/    |  Prometheus, Grafana,        |  monitoring      |
+  |  kube-prometheus-stack    |  Alertmanager, exporters     |                  |
+  +---------------------------+------------------------------+------------------+
+
+
+  EL FICHERO DE VALUES — como funciona
+  ======================================
+
+  File: deploy/helm-values/argocd-values.yaml
+
+  El chart de ArgoCD tiene miles de opciones configurables.
+  Tu fichero de values solo sobreescribe las que te importan:
+
+  +--------------------------------------+
+  |  Chart defaults (en el chart)        |
+  |                                      |
+  |  server.replicas: 1          <-- OK  |
+  |  server.service.type: LoadBalancer   |
+  |  server.insecure: false      <-- KO  |
+  |  redis.enabled: true         <-- OK  |
+  +--------------------------------------+
+            |
+            | tu values.yaml sobreescribe
+            v
+  +--------------------------------------+
+  |  deploy/helm-values/argocd-values.yaml|
+  |                                      |
+  |  server.service.type: ClusterIP      |  <-- cambia esto
+  |  configs.params.server.insecure: true|  <-- y esto
+  +--------------------------------------+
+            |
+            | helm merge
+            v
+  +--------------------------------------+
+  |  Resultado final aplicado            |
+  |                                      |
+  |  server.replicas: 1     (del chart)  |
+  |  server.service.type: ClusterIP      |
+  |  server.insecure: true               |
+  |  redis.enabled: true    (del chart)  |
+  +--------------------------------------+
+
+  Regla: solo defines en tu values.yaml lo que quieres cambiar.
+  El resto usa los defaults del chart.
+
+
+  =====================================================================
+
+  KUSTOMIZE
+  ==========
+
+  Kustomize es una herramienta para personalizar manifiestos YAML
+  sin modificar los originales.
+  No usa plantillas. Trabaja con overlays sobre una base.
+
+  ESTRUCTURA EN ESTE WORKSHOP
+  ============================
+
+  apps/demo-app/
+    base/                         <-- manifiestos originales, no se tocan
+      deployment.yaml             (imagen pinada, recursos declarados)
+      service.yaml
+      kustomization.yaml          (lista los ficheros del base)
+    |
+    overlays/
+      workshop/                   <-- personalizaciones para este entorno
+        kustomization.yaml        (hereda base, añade labels, aplica patches)
+        bad-image-patch.yaml      (patch para la demo: cambia imagen a :latest)
+        bad-resources-patch.yaml  (patch para la demo: elimina resource requests)
+
+
+  COMO FUNCIONA EL OVERLAY
+  =========================
+
+  apps/demo-app/base/kustomization.yaml:
+
+    resources:
+      - deployment.yaml
+      - service.yaml
+
+
+  apps/demo-app/overlays/workshop/kustomization.yaml:
+
+    resources:
+      - ../../base        <-- incluye todo el base
+
+    labels:               <-- añade labels a todos los recursos
+      - pairs:
+          workshop: bsides-sofia
+          track: policy-detection
+
+    # patches:           <-- seccion que se activa durante la demo
+    #   - path: bad-image-patch.yaml
+
+
+  RESULTADO DE kubectl kustomize
+  ================================
+
+  Estado limpio (sin patches):
+
+  kubectl apply -k apps/demo-app/overlays/workshop
+  -->  aplica deployment.yaml + service.yaml
+       con labels workshop=bsides-sofia añadidos
+       imagen: nginxinc/nginx-unprivileged:1.29.1  (del base)
+
+  Estado con patch de imagen (durante la demo):
+
+  kubectl apply -k apps/demo-app/overlays/workshop
+  -->  aplica deployment.yaml + service.yaml
+       con labels añadidos
+       imagen: nginxinc/nginx-unprivileged:latest  <-- el patch sobreescribe
+
+
+  EL PATCH — como funciona
+  =========================
+
+  apps/demo-app/overlays/workshop/bad-image-patch.yaml:
+
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: demo-app
+  spec:
+    template:
+      spec:
+        containers:
+          - name: web
+            image: nginxinc/nginx-unprivileged:latest  <-- solo cambia esto
+
+  Kustomize hace un merge estrategico:
+  - Identifica el recurso por kind + name
+  - Sobreescribe solo los campos que aparecen en el patch
+  - El resto del Deployment (replicas, securityContext, resources) no cambia
+
+  BASE (original)            PATCH                  RESULTADO
+  ---------------            -----                  ---------
+  image: :1.29.1             image: :latest    -->  image: :latest
+  replicas: 1                (no aparece)      -->  replicas: 1
+  runAsNonRoot: true         (no aparece)      -->  runAsNonRoot: true
+  requests: cpu 100m         (no aparece)      -->  requests: cpu 100m
+
+
+  =====================================================================
+
+  HELM vs KUSTOMIZE — cuando usar cada uno
+  ==========================================
+
+  Helm                              Kustomize
+  ----                              ---------
+  Aplicaciones de terceros          Tus propios manifiestos
+  Muchos parametros configurables   Cambios puntuales sobre una base
+  Versionado de chart               Sin plantillas, solo YAML puro
+  helm install / upgrade            kubectl apply -k
+  Necesita un chart existente       Funciona con cualquier YAML
+
+
+  EN ESTE WORKSHOP:
+
+  Helm instala las herramientas     Kustomize gestiona la app demo
+  (ArgoCD, Kyverno, Prometheus)     (demo-app base + overlay workshop)
+       |                                      |
+       v                                      v
+  No tocas esos YAMLs               Si tocas estos YAMLs
+  Solo el fichero de values         Para introducir la violation
+                                    y luego el fix
+
