@@ -18,6 +18,17 @@ spec:
               kinds:
                 - Pod
                 - Deployment
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
       validate:
         message: "Images must not use the latest tag."
         foreach:
