@@ -1,0 +1,44 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-host-namespaces
+  annotations:
+    policies.kyverno.io/title: Disallow host namespaces
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod, Deployment
+    policies.kyverno.io/description: >-
+      hostPID lets a container see all processes on the node and read
+      /proc/<pid>/environ — which may contain cloud provider credentials
+      passed at boot. hostNetwork exposes the node's network stack.
+      hostIPC shares the host's inter-process communication namespace.
+      Any of these breaks the pod sandbox boundary. Severity: CRITICAL.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
+      validate:
+        message: "Pods must not use hostNetwork, hostPID, or hostIPC. These break the sandbox boundary."
+        pattern:
+          spec:
+            =(hostNetwork): false
+            =(hostPID): false
+            =(hostIPC): false

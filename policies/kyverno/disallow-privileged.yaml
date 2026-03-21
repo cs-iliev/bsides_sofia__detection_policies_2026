@@ -1,0 +1,49 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+  annotations:
+    policies.kyverno.io/title: Disallow privileged containers
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod, Deployment
+    policies.kyverno.io/description: >-
+      Privileged containers have nearly full access to the host node.
+      If an attacker exploits a CVE inside, they can break out and read
+      Kubernetes certificates at /etc/kubernetes/pki. This policy flags
+      any container with privileged:true or allowPrivilegeEscalation:true.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
+      validate:
+        message: "Privileged containers are not allowed. Remove privileged:true and allowPrivilegeEscalation:true."
+        foreach:
+          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.privileged || false }}"
+                    operator: Equals
+                    value: true
+                  - key: "{{ element.securityContext.allowPrivilegeEscalation || false }}"
+                    operator: Equals
+                    value: true

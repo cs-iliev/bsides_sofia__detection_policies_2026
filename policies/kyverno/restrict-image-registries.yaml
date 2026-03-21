@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict image registries
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod, Deployment
+    policies.kyverno.io/description: >-
+      Docker Hub has thousands of typosquatted images and does not run
+      vulnerability scans by default. Images should only be pulled from
+      trusted internal registries. This policy flags any image not prefixed
+      with the approved registry (nginxinc/ is allowed for the workshop demo).
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-untrusted-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
+      validate:
+        message: "Images must be pulled from an approved registry, not docker.io/library."
+        foreach:
+          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: AnyIn
+                    value:
+                      - "docker.io/library/*"
+                      - "library/*"

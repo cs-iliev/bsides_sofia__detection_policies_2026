@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-run-as-root
+  annotations:
+    policies.kyverno.io/title: Disallow running as root
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod, Deployment
+    policies.kyverno.io/description: >-
+      Most container breakout CVEs require the process to be root (UID 0).
+      Non-root containers are significantly harder to exploit. This policy
+      flags any container with runAsUser:0 or runAsNonRoot:false.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-run-as-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
+      validate:
+        message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
+        foreach:
+          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.runAsUser || 1 }}"
+                    operator: Equals
+                    value: 0
+                  - key: "{{ element.securityContext.runAsNonRoot || true }}"
+                    operator: Equals
+                    value: false
