@@ -1,0 +1,206 @@
+
+  Kubernetes — Conceptos minimos para seguir el workshop
+  =======================================================
+
+
+  CONTENEDOR
+  ===========
+
+  Un contenedor es una forma de empaquetar una aplicacion con todo lo que
+  necesita para correr, de forma que puedas ejecutarla igual en cualquier maquina.
+
+  +-----------------------------------------------+
+  |  Contenedor                                   |
+  |                                               |
+  |  codigo de la app                             |
+  |  + dependencias                               |
+  |  + configuracion                              |
+  |  + runtime                                    |
+  |  = ejecutable igual en cualquier maquina      |
+  +-----------------------------------------------+
+
+
+  POD
+  ====
+
+  Un pod es la unidad mas pequeña en Kubernetes.
+  Es donde corre un contenedor. Normalmente uno por pod.
+
+  +-------------------------+
+  |  Pod                    |
+  |  +-------------------+  |
+  |  |   Contenedor      |  |
+  |  |   (tu app)        |  |
+  |  +-------------------+  |
+  +-------------------------+
+
+  Kubernetes no gestiona contenedores directamente — gestiona pods.
+
+
+  DEPLOYMENT
+  ===========
+
+  Un Deployment le dice a Kubernetes cuantas copias de ese pod quieres
+  y como debe estar configurado. Si un pod muere, Kubernetes lo recrea solo.
+
+  +-------------------------------------------------------+
+  |  Deployment  (replicas: 3)                           |
+  |                                                       |
+  |   +----------+   +----------+   +----------+         |
+  |   |  Pod     |   |  Pod     |   |  Pod     |         |
+  |   | (web)    |   | (web)    |   | (web)    |         |
+  |   +----------+   +----------+   +----+-----+         |
+  |                                      |               |
+  |                                   pod muere          |
+  |                                      |               |
+  |                                      v               |
+  |                               +----------+           |
+  |                               |  Pod     |  <-- nuevo|
+  |                               | (web)    |           |
+  |                               +----------+           |
+  +-------------------------------------------------------+
+
+
+  NAMESPACE
+  ==========
+
+  Un namespace es una frontera logica dentro del cluster.
+  Sirve para separar workloads, como si fueran carpetas.
+
+  +----------------------------------------------------------+
+  |  Cluster                                                 |
+  |                                                          |
+  |   +----------------+  +----------------+  +-----------+ |
+  |   |  namespace:    |  |  namespace:    |  | namespace:| |
+  |   |  demo          |  |  kyverno       |  | argocd    | |
+  |   |                |  |                |  |           | |
+  |   |  demo-app      |  |  kyverno       |  | argocd-   | |
+  |   |  (tu app)      |  |  (policies)    |  | server    | |
+  |   +----------------+  +----------------+  +-----------+ |
+  +----------------------------------------------------------+
+
+  En el workshop: namespace demo para la app,
+  namespaces separados para kyverno, argocd y monitoring.
+
+
+  ADMISSION
+  ==========
+
+  Cuando un recurso llega al API server de Kubernetes,
+  antes de que se acepte, pasa por un checkpoint llamado admission.
+  Ahi es donde pueden entrar herramientas como Kyverno a evaluar ese recurso.
+
+  kubectl apply
+       |
+       v
+  +--------------------+
+  |   API server       |
+  +--------------------+
+       |
+       v
+  +--------------------+     <-- ADMISSION CHECKPOINT
+  |  Kyverno evalua    |
+  |  el recurso aqui   |
+  |                    |
+  |  cumple policy?    |
+  |   si -> continua   |
+  |   no -> registra   |
+  |         violation  |
+  +--------------------+
+       |
+       v
+  +--------------------+
+  |   etcd             |
+  |   (estado del      |
+  |    cluster)        |
+  +--------------------+
+       |
+       v
+  Recurso activo en el cluster
+
+
+  POLICY
+  =======
+
+  Una policy es una regla que dice como deberia estar configurado un recurso.
+
+  Ejemplo de lo que define una ClusterPolicy en este workshop:
+
+  +-----------------------------------------------+
+  |  ClusterPolicy: disallow-latest               |
+  |                                               |
+  |  regla: si la imagen contiene ":latest"       |
+  |         -> registra violation                 |
+  |                                               |
+  |  modo: Audit                                  |
+  |  (no bloquea — solo registra)                 |
+  +-----------------------------------------------+
+
+  +-----------------------------------------------+
+  |  ClusterPolicy: require-requests              |
+  |                                               |
+  |  regla: si el contenedor no declara           |
+  |         cpu/memory requests                   |
+  |         -> registra violation                 |
+  |                                               |
+  |  modo: Audit                                  |
+  +-----------------------------------------------+
+
+
+  VIOLATION
+  ==========
+
+  Una violation ocurre cuando un recurso no cumple una policy.
+  Es la senal que vamos a convertir en deteccion.
+
+  Recurso llega al cluster
+       |
+       v
+  Kyverno evalua en admission o en background
+       |
+       +-- cumple policy --> pass  (silencio)
+       |
+       +-- no cumple   --> violation registrada
+                               |
+                               v
+                     +----------------------+
+                     |  PolicyReport        |
+                     |                      |
+                     |  policy: disallow-   |
+                     |  latest              |
+                     |  resource: demo-app  |
+                     |  namespace: demo     |
+                     |  result: FAIL        |
+                     +----------------------+
+                               |
+                               v
+                     metrica: kyverno_policy_results_total
+                              {result="fail"}
+                               |
+                               v
+                     Prometheus -> Grafana -> Alertmanager -> Ticket
+
+
+  RESUMEN — jerarquia de conceptos
+  ==================================
+
+  Cluster
+   |
+   +-- Namespace (demo)
+   |    |
+   |    +-- Deployment (demo-app)
+   |         |
+   |         +-- Pod
+   |              |
+   |              +-- Contenedor
+   |                   imagen: nginxinc/nginx-unprivileged:1.29.1
+   |
+   +-- Namespace (kyverno)
+   |    |
+   |    +-- ClusterPolicy (disallow-latest)   <-- evalua en admission
+   |    +-- ClusterPolicy (require-requests)  <-- evalua en background
+   |
+   +-- Admission Checkpoint
+        |
+        Kyverno se conecta aqui para evaluar cada recurso
+
