@@ -1,0 +1,287 @@
+
+  From Kyverno Violations to SIEM Rules
+  ======================================
+  BSides Sofia · Policy-as-Detection for Kubernetes
+
+
+  THE PROBLEM
+  ============
+
+  Kyverno produces violations. Your SIEM expects events.
+  Between the two there is a format and transport gap.
+
+  Kyverno output:           SIEM expects:
+  ---------------           -------------
+  PolicyReport (K8s object) CEF / ECS / LEEF / raw JSON
+  Prometheus metric         Syslog, HTTP ingest, Kafka topic
+  Kubernetes event          Normalized fields: src_ip, user, action...
+
+
+  =====================================================================
+
+  THREE PATHS TO THE SIEM
+  ========================
+
+
+  PATH 1 — Alertmanager webhook  (simplest, already wired in this repo)
+  -----------------------------------------------------------------------
+
+  Kyverno
+    | violation recorded in PolicyReport
+    | metric incremented: kyverno_policy_results_total{result="fail"}
+    v
+  Prometheus
+    | evaluates alert rule: sum(fail) > 0 for 2m
+    v
+  Alertmanager
+    | routes by severity/team labels
+    v
+  webhook_config:
+    url: https://your-siem.company.com/api/v1/ingest
+    send_resolved: true
+
+  File to edit: observability/alertmanager/receivers.yaml
+
+  What reaches the SIEM — Alertmanager JSON payload:
+
+  {
+    "receiver": "siem-webhook",
+    "status": "firing",
+    "alerts": [{
+      "status":    "firing",
+      "labels": {
+        "alertname": "KyvernoPolicyViolationDetected",
+        "policy":    "disallow-latest",
+        "namespace": "demo",
+        "severity":  "warning",
+        "team":      "platform"
+      },
+      "annotations": {
+        "summary":     "Kyverno policy violation detected",
+        "description": "Policy disallow-latest has active failures in namespace demo"
+      },
+      "startsAt":  "2026-03-21T10:15:00Z",
+      "endsAt":    "0001-01-01T00:00:00Z"
+    }]
+  }
+
+  Pros:   already configured, no extra components needed
+  Cons:   only fires after 2m, coarse granularity (one alert per policy/namespace)
+          no per-resource detail in the payload
+
+
+  PATH 2 — Log shipper from Kubernetes events  (richer, near real-time)
+  -----------------------------------------------------------------------
+
+  Kyverno
+    | writes to Kubernetes Events (kubectl get events -n demo)
+    | and to PolicyReport
+    v
+  Log shipper on each node
+  (Fluentd / Vector / Fluent Bit)
+    | tails Kubernetes API for events
+    | filters: reason=PolicyViolation, source=kyverno
+    v
+  SIEM ingest endpoint
+  (Elastic/Splunk/Sentinel HTTP Collector)
+
+  Sample Kubernetes event Kyverno creates:
+
+    Type:     Warning
+    Reason:   PolicyViolation
+    Message:  policy disallow-latest/autogen-disallow-latest-tag
+              fail: validation error: Images must not use the latest tag.
+              Rule autogen-disallow-latest-tag failed at path
+              /spec/template/spec/containers/0/image/
+    Object:   Deployment/demo-app
+    Namespace: demo
+
+  Vector config snippet to forward to Splunk HEC:
+
+    [sources.k8s_events]
+    type = "kubernetes_logs"
+
+    [transforms.filter_kyverno]
+    type   = "filter"
+    inputs = ["k8s_events"]
+    condition = '.kubernetes.labels."app.kubernetes.io/managed-by" == "kyverno"'
+
+    [sinks.splunk_hec]
+    type       = "splunk_hec_logs"
+    inputs     = ["filter_kyverno"]
+    endpoint   = "https://splunk.company.com:8088"
+    token      = "${SPLUNK_HEC_TOKEN}"
+    index      = "kubernetes_policy"
+
+  Pros:   near real-time (~seconds), per-resource granularity
+  Cons:   requires a log shipper deployed on each node (DaemonSet)
+
+
+  PATH 3 — PolicyReport exporter  (most detailed, structured)
+  ------------------------------------------------------------
+
+  Kyverno
+    | updates PolicyReport object (one per namespace)
+    v
+  policy-reporter (open source, github.com/kyverno/policy-reporter)
+    | watches all PolicyReport objects via Kubernetes watch API
+    | normalizes results to a structured event format
+    v
+  +-----------------------------+
+  |  Outputs:                   |
+  |  - Elasticsearch / OpenSearch|
+  |  - Splunk HEC               |
+  |  - Microsoft Sentinel       |
+  |  - Google Chronicle         |
+  |  - Slack / Teams / webhook  |
+  +-----------------------------+
+
+  Sample normalized event from policy-reporter:
+
+  {
+    "id":        "a1b2c3d4",
+    "timestamp": "2026-03-21T10:15:32Z",
+    "policy":    "disallow-latest",
+    "rule":      "autogen-disallow-latest-tag",
+    "result":    "fail",
+    "severity":  "medium",
+    "category":  "Software Supply Chain",
+    "resource": {
+      "kind":      "Deployment",
+      "name":      "demo-app",
+      "namespace": "demo",
+      "uid":       "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+    },
+    "message": "Images must not use the latest tag.",
+    "cluster": "k3d-workshop"
+  }
+
+  Pros:   richest data, all fields normalized, cluster-scoped
+  Cons:   extra component to deploy and maintain
+
+
+  =====================================================================
+
+  SIEM RULE TYPES YOU CAN BUILD
+  ==============================
+
+  Once violations are in the SIEM, you can write three categories of rules:
+
+
+  RULE TYPE 1 — Threshold (simplest)
+  ------------------------------------
+
+  Trigger when a specific violation appears.
+
+  Splunk SPL:
+    index=kubernetes_policy result=fail policy=disallow-latest
+    | stats count by namespace, resource
+    | where count > 0
+
+  Elastic EQL:
+    sequence by namespace
+      [any where policy == "disallow-latest" and result == "fail"]
+
+  KQL (Sentinel):
+    KyvernoPolicyEvents
+    | where result == "fail" and policy == "disallow-latest"
+    | summarize count() by namespace, resource
+
+  Use case: any occurrence of a critical policy violation triggers a ticket.
+
+
+  RULE TYPE 2 — Correlation (medium complexity)
+  -----------------------------------------------
+
+  Detect patterns across multiple violations in the same namespace
+  within a time window. Useful for detecting misconfigurations spreading
+  or an attacker probing what they can deploy.
+
+  Scenario: 3 or more different policies violated in the same namespace
+            within 10 minutes — possible misconfigured deployment pipeline
+            or attacker iterating on payloads.
+
+  Splunk SPL:
+    index=kubernetes_policy result=fail earliest=-10m
+    | stats dc(policy) as distinct_policies by namespace
+    | where distinct_policies >= 3
+
+  What this detects:
+    Normal: one team makes one mistake -> 1 policy violated
+    Suspicious: multiple policies violated rapidly -> something is iterating
+
+  Enrichment to add:
+    Join on namespace labels (owner, team, env) to route to the right team.
+    Join on recent git commits to correlate violation time with deployment time.
+
+
+  RULE TYPE 3 — Anomaly (advanced)
+  ----------------------------------
+
+  Baseline the normal violation rate per namespace, alert on spikes.
+  Useful in large clusters where some violations are always present.
+
+  Logic:
+    1. Calculate average violations per namespace over last 7 days
+    2. Alert when current hour is > 2 standard deviations above baseline
+
+  Splunk SPL (simplified):
+    index=kubernetes_policy result=fail
+    | timechart span=1h count by namespace
+    | anomalydetection action=annotate
+
+  Use case: detect when a namespace suddenly has 10x its normal violations —
+            may indicate a mass deployment of misconfigured workloads
+            or an attacker deploying many pods to find a working payload.
+
+
+  =====================================================================
+
+  ENRICHMENT — what to add before sending to the SIEM
+  =====================================================
+
+  Raw Kyverno events lack business context. Add these fields
+  at the shipper or transformer layer before ingestion:
+
+  Field              Source                    Why it matters
+  -----------------  ------------------------  ----------------------------------
+  cluster_name       ConfigMap workshop-meta   which cluster, multi-cluster envs
+  owner_team         namespace label "owner"   who to page
+  env                namespace label "env"     prod vs staging priority
+  git_commit         annotation on Deployment  correlate with the change that caused it
+  image_digest       pod spec                  exact image, not just tag
+  node_name          pod spec                  which node, useful for host-level correlation
+  cloud_region       node label               geographic context
+
+
+  =====================================================================
+
+  COMPARISON TABLE
+  =================
+
+  Path                  Latency   Granularity   Extra components   Best for
+  --------------------  --------  ------------  -----------------  -------------------------
+  Alertmanager webhook  ~2-3 min  per policy    none               quick start, coarse alerts
+  Log shipper           ~seconds  per resource  DaemonSet          operational SIEMs (Splunk)
+  Policy-reporter       ~seconds  per resource  1 Deployment       dedicated security SIEMs
+
+
+  =====================================================================
+
+  RECOMMENDED STARTING POINT FOR MONDAY
+  =======================================
+
+  1. Deploy policy-reporter pointed at your SIEM HTTP ingest endpoint
+     (30 minutes, one Helm chart)
+
+  2. Create a threshold rule for any critical/high severity violation
+     (disallow-privileged, disallow-host-namespaces)
+
+  3. Add namespace owner enrichment so alerts route to the right team
+
+  4. After one week: review the noise, tune severity thresholds,
+     promote the most useful rules to correlation rules
+
+  Do NOT start with anomaly detection.
+  You need a baseline first. Anomaly rules on day 1 produce only noise.
+
