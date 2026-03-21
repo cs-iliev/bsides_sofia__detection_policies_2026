@@ -189,10 +189,14 @@
 
   Each policy produces a detection signal with a specific meaning:
 
-  Policy               Signal meaning                  Who cares
-  ---------------      ------------------------------  ----------------
-  disallow-latest      Supply chain / traceability     Security, SRE
-  require-requests     Reliability / cost governance   Platform, FinOps
+  Policy                      Severity   Signal meaning                  Who cares
+  --------------------------  --------   ------------------------------  ----------------
+  disallow-latest             medium     Supply chain / traceability     Security, SRE
+  require-requests            medium     Reliability / cost governance   Platform, FinOps
+  disallow-privileged         high       Container escape risk           Security
+  disallow-run-as-root        high       Privilege escalation surface    Security, Platform
+  restrict-image-registries   high       Untrusted code in cluster       Security
+  disallow-host-namespaces    critical   Namespace sandbox broken        Security (escalate)
 
 
   =====================================================================
@@ -235,27 +239,216 @@
 
   =====================================================================
 
-  WHAT A THIRD POLICY WOULD LOOK LIKE
-  =====================================
-  (Not implemented — shown as example for audience questions)
+  ADDITIONAL SCENARIOS — not implemented in the workshop
+  =======================================================
+  Shown as examples for audience questions and Monday takeaways.
+  All follow the same pattern: Kyverno policy -> PolicyReport -> metric -> alert.
 
-  Policy:    disallow-privileged
-  File:      policies/kyverno/disallow-privileged.yaml (does not exist yet)
 
-  What it checks:
-    securityContext.privileged: true
+  =====================================================================
 
-  Business case:
-    A privileged container has nearly full access to the host node.
-    If compromised, the attacker can escape the container and access
-    the node filesystem, other pods, and node credentials.
+  SCENARIO 3 — disallow-privileged
+  ==================================
+  File: policies/kyverno/disallow-privileged.yaml (not in repo)
+  Severity: HIGH
+
+  +------------------------------------------------------------------+
+  |  WHAT IT CHECKS                                                  |
+  |                                                                  |
+  |  BAD:   securityContext:                                         |
+  |           privileged: true                                       |
+  |                                                                  |
+  |  GOOD:  securityContext:                                         |
+  |           privileged: false   (or field absent, defaults false)  |
+  +------------------------------------------------------------------+
+
+  BUSINESS CASE
+  -------------
+
+  A privileged container runs with nearly the same permissions as root
+  on the host node. It can:
+  - Read and write any file on the node filesystem
+  - Access other pods' network traffic and secrets
+  - Load kernel modules
+  - Escape to the node and pivot to the rest of the cluster
+
+  Attack scenario:
+    Attacker exploits a CVE in your web app (inside the container).
+    Container is privileged -> attacker breaks out to the node.
+    From the node: reads /etc/kubernetes/pki, steals cluster certificates.
+    Game over for the entire cluster, not just one app.
+
+  Without this policy: you find out during the incident.
+  With this policy: you get a signal the moment someone deploys it.
+
+  Detection value
+    "There is a workload that can escape its container boundary."
     This is a high-severity security signal, not a hygiene issue.
 
   Severity:  high
+  Owner:     security team
   Fix:       remove privileged: true, redesign if the app needs it
 
-  Why it is not in the workshop:
-    The demo-app already has a clean securityContext.
-    Adding a third violation type would dilute the narrative.
-    One or two policies demonstrated well beats three policies
-    demonstrated poorly.
+
+  =====================================================================
+
+  SCENARIO 4 — disallow-run-as-root
+  ===================================
+  File: policies/kyverno/disallow-run-as-root.yaml (not in repo)
+  Severity: HIGH
+
+  +------------------------------------------------------------------+
+  |  WHAT IT CHECKS                                                  |
+  |                                                                  |
+  |  BAD:   securityContext:                                         |
+  |           runAsNonRoot: false                                    |
+  |           # or: runAsUser: 0                                     |
+  |                                                                  |
+  |  GOOD:  securityContext:                                         |
+  |           runAsNonRoot: true                                     |
+  |           runAsUser: 101     (non-zero UID)                      |
+  +------------------------------------------------------------------+
+
+  BUSINESS CASE
+  -------------
+
+  A container running as root (UID 0) inside the container maps to
+  root on the host if the container escapes or if a volume is mounted.
+
+  Problem 1 — Volume mount risk
+    If the container mounts a host path (or a misconfigured PVC),
+    running as root means it can write anywhere on that volume,
+    including paths that affect other containers or the node.
+
+  Problem 2 — CVE blast radius
+    Most container breakout CVEs require the container process to run
+    as root to complete the escape. Non-root containers are significantly
+    harder to exploit for privilege escalation.
+
+  Problem 3 — Compliance
+    CIS Kubernetes Benchmark, PCI-DSS, and most security frameworks
+    explicitly require containers to run as non-root.
+
+  Attack scenario:
+    Your Python web app runs as root inside the container.
+    Attacker exploits a path traversal bug in the app.
+    Because the process is root, they can read /etc/shadow equivalent
+    paths inside the container and any mounted secrets.
+
+  Detection value
+    "There is a workload running as root inside the container."
+    Every container running as root is a process that needs re-examining.
+
+  Severity:  high
+  Owner:     team responsible for the deployment
+  Fix:       add runAsNonRoot: true and a non-zero runAsUser to the spec
+
+
+  =====================================================================
+
+  SCENARIO 5 — restrict-image-registries
+  ========================================
+  File: policies/kyverno/restrict-image-registries.yaml (not in repo)
+  Severity: HIGH
+
+  +------------------------------------------------------------------+
+  |  WHAT IT CHECKS                                                  |
+  |                                                                  |
+  |  BAD:   image: nginx:1.29.1          (Docker Hub, uncontrolled)  |
+  |  BAD:   image: random-user/app:1.0   (unknown registry)         |
+  |                                                                  |
+  |  GOOD:  image: registry.company.com/nginx:1.29.1                |
+  |  GOOD:  image: 123456789.dkr.ecr.eu-west-1.amazonaws.com/app:v3 |
+  +------------------------------------------------------------------+
+
+  BUSINESS CASE
+  -------------
+
+  Allowing images from any public registry means you have no control
+  over what code is running in your cluster.
+
+  Problem 1 — Supply chain attack
+    Docker Hub has thousands of typosquatted images.
+    nginx vs ngiinx vs ngnix — one of them may be malicious.
+    If your policy allows any registry, a developer typo pulls malware.
+
+  Problem 2 — No vulnerability scanning
+    Your internal registry runs image scans before allowing an image.
+    Public registries do not. Images from Docker Hub may have known CVEs
+    that your scanner would have caught.
+
+  Problem 3 — No provenance
+    You cannot verify who built the image or what is in it.
+    SBOMs and image signing (cosign, Notary) only work if you control
+    the registry.
+
+  Real incident analogy:
+    In 2021, the dependency confusion attack tricked companies into
+    pulling internal package names from public registries.
+    The same attack vector applies to container images.
+
+  Detection value
+    "There is a workload pulling from an untrusted registry."
+    This is a supply chain integrity signal.
+
+  Severity:  high
+  Owner:     platform / security team
+  Fix:       mirror or re-tag the image in the internal registry,
+             update the deployment to point to the internal registry URL
+
+
+  =====================================================================
+
+  SCENARIO 6 — disallow-host-namespaces
+  =======================================
+  File: policies/kyverno/disallow-host-namespaces.yaml (not in repo)
+  Severity: CRITICAL
+
+  +------------------------------------------------------------------+
+  |  WHAT IT CHECKS                                                  |
+  |                                                                  |
+  |  BAD:   spec:                                                    |
+  |           hostNetwork: true   # sees all host network traffic    |
+  |           hostPID: true       # sees all processes on the node   |
+  |           hostIPC: true       # shared memory with host          |
+  |                                                                  |
+  |  GOOD:  (these fields absent or explicitly set to false)         |
+  +------------------------------------------------------------------+
+
+  BUSINESS CASE
+  -------------
+
+  Kubernetes isolates pods from the host using Linux namespaces.
+  hostNetwork, hostPID, and hostIPC tear down that isolation.
+
+  hostNetwork: true
+    The pod sees all network traffic on the node.
+    It can sniff traffic between other pods and the node.
+    It can bind to any port on the host IP.
+    It bypasses Kubernetes NetworkPolicy entirely.
+
+  hostPID: true
+    The pod can see all processes running on the node.
+    It can send signals to any process (including kill).
+    It can read /proc/<pid>/environ of any process —
+    which may contain secrets passed as environment variables.
+
+  hostIPC: true
+    The pod can access shared memory segments of any process on the node.
+    Databases (PostgreSQL, Redis) sometimes use shared memory.
+    A pod with hostIPC can read that memory directly.
+
+  Attack scenario:
+    Attacker deploys a pod with hostPID: true in a compromised namespace.
+    Reads /proc/1/environ on the node — finds cloud provider credentials
+    that the kubelet received at boot.
+    Uses those credentials to enumerate cloud resources and escalate.
+
+  Detection value
+    "There is a workload that has broken out of its namespace sandbox."
+    Any pod requesting host namespaces is an immediate investigation target.
+
+  Severity:  critical
+  Owner:     security team (escalate immediately)
+  Fix:       remove hostNetwork/hostPID/hostIPC from the pod spec.
+             If a system component genuinely needs it, document and exempt it.
