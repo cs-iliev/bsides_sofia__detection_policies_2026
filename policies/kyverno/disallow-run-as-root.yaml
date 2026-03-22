@@ -9,8 +9,7 @@ metadata:
     policies.kyverno.io/subject: Pod, Deployment
     policies.kyverno.io/description: >-
       Most container breakout CVEs require the process to be root (UID 0).
-      Non-root containers are significantly harder to exploit. This policy
-      flags any container with runAsUser:0 or runAsNonRoot:false.
+      Non-root containers are significantly harder to exploit.
 spec:
   validationFailureAction: Audit
   background: true
@@ -21,8 +20,9 @@ spec:
           - resources:
               kinds:
                 - Deployment
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
         pattern:
@@ -40,8 +40,9 @@ spec:
           - resources:
               kinds:
                 - Pod
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
         pattern:

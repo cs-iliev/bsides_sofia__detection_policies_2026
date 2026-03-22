@@ -9,10 +9,8 @@ metadata:
     policies.kyverno.io/subject: Pod, Deployment
     policies.kyverno.io/description: >-
       hostPID lets a container see all processes on the node and read
-      /proc/<pid>/environ — which may contain cloud provider credentials
-      passed at boot. hostNetwork exposes the node's network stack.
-      hostIPC shares the host's inter-process communication namespace.
-      Any of these breaks the pod sandbox boundary. Severity: CRITICAL.
+      /proc/<pid>/environ. hostNetwork exposes the node network stack.
+      hostIPC shares host IPC namespace. All break the pod sandbox.
 spec:
   validationFailureAction: Audit
   background: true
@@ -23,8 +21,9 @@ spec:
           - resources:
               kinds:
                 - Deployment
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Pods must not use hostNetwork, hostPID, or hostIPC. These break the sandbox boundary."
         pattern:
@@ -41,8 +40,9 @@ spec:
           - resources:
               kinds:
                 - Pod
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Pods must not use hostNetwork, hostPID, or hostIPC. These break the sandbox boundary."
         pattern:

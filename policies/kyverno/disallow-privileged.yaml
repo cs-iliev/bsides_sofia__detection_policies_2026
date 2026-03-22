@@ -10,8 +10,7 @@ metadata:
     policies.kyverno.io/description: >-
       Privileged containers have nearly full access to the host node.
       If an attacker exploits a CVE inside, they can break out and read
-      Kubernetes certificates at /etc/kubernetes/pki. This policy flags
-      any container with privileged:true or allowPrivilegeEscalation:true.
+      Kubernetes certificates at /etc/kubernetes/pki.
 spec:
   validationFailureAction: Audit
   background: true
@@ -22,8 +21,9 @@ spec:
           - resources:
               kinds:
                 - Deployment
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Privileged containers are not allowed. Remove privileged:true and allowPrivilegeEscalation:true."
         pattern:
@@ -41,8 +41,9 @@ spec:
           - resources:
               kinds:
                 - Pod
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Privileged containers are not allowed. Remove privileged:true and allowPrivilegeEscalation:true."
         pattern:

@@ -17,8 +17,9 @@ spec:
           - resources:
               kinds:
                 - Deployment
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Images must not use the latest tag. Pin to a specific version."
         pattern:
@@ -34,8 +35,9 @@ spec:
           - resources:
               kinds:
                 - Pod
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Images must not use the latest tag. Pin to a specific version."
         pattern:

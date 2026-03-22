@@ -17,8 +17,9 @@ spec:
           - resources:
               kinds:
                 - Deployment
-              namespaces:
-                - demo
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: demo
       validate:
         message: "Containers must define CPU and memory requests."
         pattern:
