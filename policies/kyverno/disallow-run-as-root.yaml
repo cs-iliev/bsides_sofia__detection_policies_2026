@@ -35,14 +35,11 @@ spec:
                 - cert-manager
       validate:
         message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
-        foreach:
-          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
-            deny:
-              conditions:
-                any:
-                  - key: "{{ element.securityContext.runAsUser || 1 }}"
-                    operator: Equals
-                    value: 0
-                  - key: "{{ element.securityContext.runAsNonRoot || true }}"
-                    operator: Equals
-                    value: false
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - =(securityContext):
+                      =(runAsUser): ">0"
+                      =(runAsNonRoot): true

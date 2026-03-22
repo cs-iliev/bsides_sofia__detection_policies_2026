@@ -7,5 +7,7 @@ spec:
     spec:
       containers:
         - name: web
-          resources: {}
+          resources:
+            requests: null
+            limits: null
 
