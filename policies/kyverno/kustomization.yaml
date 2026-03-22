@@ -5,6 +5,10 @@ resources:
   # --- ALWAYS ACTIVE (baseline) ---
   - disallow-latest.yaml
   - require-requests.yaml
+  - disallow-privileged.yaml
+  - disallow-run-as-root.yaml
+  - restrict-image-registries.yaml
+  - disallow-host-namespaces.yaml
 
   # --- WORKSHOP SCENARIOS — uncomment ONE at a time to activate ---
 
