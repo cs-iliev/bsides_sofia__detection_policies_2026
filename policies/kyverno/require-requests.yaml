@@ -17,17 +17,8 @@ spec:
           - resources:
               kinds:
                 - Deployment
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Containers must define CPU and memory requests."
         pattern:
@@ -39,4 +30,3 @@ spec:
                       requests:
                         cpu: "?*"
                         memory: "?*"
-

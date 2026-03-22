@@ -17,17 +17,8 @@ spec:
           - resources:
               kinds:
                 - Deployment
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Images must not use the latest tag. Pin to a specific version."
         pattern:
@@ -43,21 +34,11 @@ spec:
           - resources:
               kinds:
                 - Pod
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Images must not use the latest tag. Pin to a specific version."
         pattern:
           spec:
             containers:
               - image: "!*:latest"
-

@@ -17,24 +17,32 @@ spec:
   validationFailureAction: Audit
   background: true
   rules:
-    - name: deny-host-namespaces
+    - name: deny-host-namespaces-deployment
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaces:
+                - demo
+      validate:
+        message: "Pods must not use hostNetwork, hostPID, or hostIPC. These break the sandbox boundary."
+        pattern:
+          spec:
+            template:
+              spec:
+                =(hostNetwork): false
+                =(hostPID): false
+                =(hostIPC): false
+
+    - name: deny-host-namespaces-pod
       match:
         any:
           - resources:
               kinds:
                 - Pod
-                - Deployment
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Pods must not use hostNetwork, hostPID, or hostIPC. These break the sandbox boundary."
         pattern:

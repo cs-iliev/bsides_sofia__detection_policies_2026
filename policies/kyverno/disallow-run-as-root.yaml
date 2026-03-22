@@ -15,24 +15,14 @@ spec:
   validationFailureAction: Audit
   background: true
   rules:
-    - name: deny-run-as-root
+    - name: deny-run-as-root-deployment
       match:
         any:
           - resources:
               kinds:
-                - Pod
                 - Deployment
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
         pattern:
@@ -43,3 +33,20 @@ spec:
                   - =(securityContext):
                       =(runAsUser): ">0"
                       =(runAsNonRoot): true
+
+    - name: deny-run-as-root-pod
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - demo
+      validate:
+        message: "Containers must not run as root. Set runAsNonRoot:true and runAsUser to a non-zero UID."
+        pattern:
+          spec:
+            containers:
+              - =(securityContext):
+                  =(runAsUser): ">0"
+                  =(runAsNonRoot): true

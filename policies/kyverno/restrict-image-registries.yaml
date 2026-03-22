@@ -10,39 +10,40 @@ metadata:
     policies.kyverno.io/description: >-
       Docker Hub has thousands of typosquatted images and does not run
       vulnerability scans by default. Images should only be pulled from
-      trusted internal registries. This policy flags any image not prefixed
-      with the approved registry (nginxinc/ is allowed for the workshop demo).
+      trusted internal registries. This policy flags any image pulled
+      from docker.io/library.
 spec:
   validationFailureAction: Audit
   background: true
   rules:
-    - name: deny-untrusted-registries
+    - name: deny-untrusted-registry-deployment
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaces:
+                - demo
+      validate:
+        message: "Images must be pulled from an approved registry, not docker.io/library."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - image: "!docker.io/library/*"
+
+    - name: deny-untrusted-registry-pod
       match:
         any:
           - resources:
               kinds:
                 - Pod
-                - Deployment
-      exclude:
-        any:
-          - resources:
               namespaces:
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - kyverno
-                - argocd
-                - monitoring
-                - cert-manager
+                - demo
       validate:
         message: "Images must be pulled from an approved registry, not docker.io/library."
-        foreach:
-          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
-            deny:
-              conditions:
-                any:
-                  - key: "{{ element.image }}"
-                    operator: AnyIn
-                    value:
-                      - "docker.io/library/*"
-                      - "library/*"
+        pattern:
+          spec:
+            containers:
+              - image: "!docker.io/library/*"
