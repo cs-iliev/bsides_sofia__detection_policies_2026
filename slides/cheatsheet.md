@@ -58,7 +58,7 @@ kubectl --context k3d-workshop port-forward svc/kube-prometheus-stack-grafana -n
 kubectl --context k3d-workshop port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090
 
 # Alertmanager → http://localhost:9093
-kubectl --context k3d-workshop port-forward svc/kube-prometheus-stack-alertmanager -n monitoring 9093:9093
+kubectl --context k3d-workshop port-forward svc/monitoring-alertmanager -n monitoring 9093:9093
 ```
 
 ---
