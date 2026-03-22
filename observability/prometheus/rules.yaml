@@ -8,12 +8,12 @@ spec:
     - name: kyverno-policy-detection
       rules:
         - alert: KyvernoPolicyViolationDetected
-          expr: sum by (policy, namespace) (kyverno_policy_results_total{result="fail"}) > 0
+          expr: sum by (policy_name, resource_namespace) (kyverno_policy_results_total{rule_result="fail", resource_namespace="demo"}) > 0
           for: 2m
           labels:
             severity: warning
             team: platform
           annotations:
             summary: "Kyverno policy violation detected"
-            description: "Policy {{ $labels.policy }} has active failures in namespace {{ $labels.namespace }}."
+            description: "Policy {{ $labels.policy_name }} has active failures in namespace {{ $labels.resource_namespace }}."
 
