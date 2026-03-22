@@ -11,12 +11,11 @@ spec:
   validationFailureAction: Audit
   background: true
   rules:
-    - name: require-pinned-image-tag
+    - name: require-pinned-image-tag-deployment
       match:
         any:
           - resources:
               kinds:
-                - Pod
                 - Deployment
       exclude:
         any:
@@ -30,13 +29,35 @@ spec:
                 - monitoring
                 - cert-manager
       validate:
-        message: "Images must not use the latest tag."
-        foreach:
-          - list: "request.object.spec.template.spec.containers || request.object.spec.containers"
-            deny:
-              conditions:
-                any:
-                  - key: "{{ contains(element.image, ':latest') }}"
-                    operator: Equals
-                    value: true
+        message: "Images must not use the latest tag. Pin to a specific version."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - image: "!*:latest"
+
+    - name: require-pinned-image-tag-pod
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - kyverno
+                - argocd
+                - monitoring
+                - cert-manager
+      validate:
+        message: "Images must not use the latest tag. Pin to a specific version."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
 

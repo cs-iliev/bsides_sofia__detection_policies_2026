@@ -434,16 +434,3 @@ KUBECONTEXT=k3d-workshop ./scripts/uninstall-workshop-stack.sh
 KUBECONTEXT=k3d-workshop ./scripts/install-workshop-stack.sh
 ```
 
----
-
-<!-- _class: lead -->
-
-## Ready?
-
-All pods Running · Argo CD Synced · Grafana loads · Policy reports empty
-
-**See you at BSides Sofia.**
-
-```
-https://github.com/jo114ge/bsides_sofia__detection_policies_2026
-```
